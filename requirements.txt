@@ -1,0 +1,4 @@
+faster-whisper>=1.0.0
+PyAudio>=0.2.14
+pynput>=1.7.7
+pyobjc-framework-ApplicationServices>=12.1

@@ -1,0 +1,11 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+
+# Temporary audio/transcription artifacts
+*.wav
+
+# Legacy local build/cache folders
+axinject/
