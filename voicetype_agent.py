@@ -37,6 +37,119 @@ class AgentConfig:
     language: str = "en"
 
 
+class RecordingIndicator:
+    def __init__(self):
+        self._proc: Optional[subprocess.Popen] = None
+
+    def start(self) -> None:
+        if self._proc is not None or sys.platform != "darwin":
+            return
+
+        indicator_script = r"""
+import queue
+import sys
+import threading
+import tkinter as tk
+
+commands = queue.Queue()
+
+def reader():
+    for line in sys.stdin:
+        commands.put(line.strip().lower())
+    commands.put("exit")
+
+threading.Thread(target=reader, daemon=True).start()
+
+root = tk.Tk()
+root.title("VoiceType Indicator")
+root.overrideredirect(True)
+root.attributes("-topmost", True)
+root.configure(bg="#111111")
+root.attributes("-alpha", 0.9)
+
+label = tk.Label(
+    root,
+    text="○ IDLE",
+    fg="#CCCCCC",
+    bg="#111111",
+    font=("Menlo", 12, "bold"),
+    padx=12,
+    pady=8,
+)
+label.pack()
+
+root.update_idletasks()
+width = root.winfo_reqwidth()
+height = root.winfo_reqheight()
+screen_w = root.winfo_screenwidth()
+screen_h = root.winfo_screenheight()
+x = max(0, (screen_w - width) // 2)
+y = max(0, screen_h - height - 50)
+root.geometry(f"{width}x{height}+{x}+{y}")
+
+def set_state(state: str) -> None:
+    if state == "recording":
+        label.configure(text="● REC", fg="#FF4D4D")
+    elif state == "processing":
+        label.configure(text="◔ WORKING", fg="#FFD166")
+    else:
+        label.configure(text="○ IDLE", fg="#CFCFCF")
+
+def pump() -> None:
+    while True:
+        try:
+            cmd = commands.get_nowait()
+        except queue.Empty:
+            break
+        if cmd == "exit":
+            root.destroy()
+            return
+        set_state(cmd)
+    root.after(100, pump)
+
+pump()
+root.mainloop()
+"""
+        try:
+            self._proc = subprocess.Popen(
+                [sys.executable, "-u", "-c", indicator_script],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        except Exception as exc:
+            self._proc = None
+            print(f"[VoiceType] Indicator disabled: {exc}", file=sys.stderr)
+
+    def stop(self) -> None:
+        self._send("exit")
+        if self._proc is not None:
+            try:
+                self._proc.wait(timeout=1.0)
+            except Exception:
+                self._proc.kill()
+            self._proc = None
+
+    def set_idle(self) -> None:
+        self._send("idle")
+
+    def set_recording(self) -> None:
+        self._send("recording")
+
+    def set_processing(self) -> None:
+        self._send("processing")
+
+    def _send(self, command: str) -> None:
+        if self._proc is None or self._proc.stdin is None:
+            return
+        try:
+            self._proc.stdin.write(command + "\n")
+            self._proc.stdin.flush()
+        except Exception:
+            return
+
+
 class AudioRecorder:
     def __init__(self, config: AgentConfig):
         self.config = config
@@ -189,6 +302,7 @@ class TextInjector:
 class VoiceTypeAgent:
     def __init__(self, config: AgentConfig):
         self.config = config
+        self._indicator = RecordingIndicator()
         self._recorder = AudioRecorder(config)
         self._transcriber = WhisperTranscriber(config)
         self._injector = TextInjector()
@@ -205,6 +319,8 @@ class VoiceTypeAgent:
     def run(self) -> None:
         print(f"[VoiceType] Listening for hotkey: {self.config.hotkey}")
         print("[VoiceType] Press Ctrl+C in this terminal to exit.")
+        self._indicator.start()
+        self._indicator.set_idle()
         self._mouse_listener = mouse.Listener(on_click=self._on_click)
         self._mouse_listener.start()
 
@@ -213,6 +329,7 @@ class VoiceTypeAgent:
                 if not self._recording_active:
                     self._recording_active = True
                     self._stop_recording_event.clear()
+                    self._indicator.set_recording()
                     self._target_ax_element_for_session = self._capture_focused_element()
                     self._target_app_for_session = self._last_click_app or self._get_frontmost_app()
                     self._target_click_for_session = self._last_click_pos
@@ -224,6 +341,7 @@ class VoiceTypeAgent:
                     )
                     return
                 self._stop_recording_event.set()
+                self._indicator.set_processing()
                 print("[VoiceType] Stop requested. Transcribing...")
 
         listener = keyboard.GlobalHotKeys({self.config.hotkey: on_hotkey})
@@ -233,6 +351,7 @@ class VoiceTypeAgent:
         finally:
             if self._mouse_listener is not None:
                 self._mouse_listener.stop()
+            self._indicator.stop()
             self._recorder.close()
 
     def _handle_session(self) -> None:
@@ -265,6 +384,7 @@ class VoiceTypeAgent:
                 self._target_app_for_session = None
                 self._target_click_for_session = None
                 self._target_ax_element_for_session = None
+                self._indicator.set_idle()
 
     def _on_click(self, _x: int, _y: int, _button: mouse.Button, pressed: bool) -> None:
         if not pressed:
