@@ -6,9 +6,9 @@ import tempfile
 import threading
 import time
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import pyaudio
 from ApplicationServices import (
@@ -38,8 +38,10 @@ class AgentConfig:
 
 
 class RecordingIndicator:
-    def __init__(self):
+    def __init__(self, on_event: Optional[Callable[[str], None]] = None):
         self._proc: Optional[subprocess.Popen] = None
+        self._reader_thread: Optional[threading.Thread] = None
+        self._on_event = on_event
 
     def start(self) -> None:
         if self._proc is not None or sys.platform != "darwin":
@@ -50,10 +52,13 @@ class RecordingIndicator:
             self._proc = subprocess.Popen(
                 [str(helper_binary)],
                 stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 text=True,
             )
+            if self._proc.stdout is not None and self._on_event is not None:
+                self._reader_thread = threading.Thread(target=self._read_events, daemon=True)
+                self._reader_thread.start()
         except Exception as exc:
             self._proc = None
             print(f"[VoiceType] Indicator disabled: {exc}", file=sys.stderr)
@@ -68,6 +73,7 @@ class RecordingIndicator:
             except Exception:
                 self._proc.kill()
             self._proc = None
+            self._reader_thread = None
 
     def set_idle(self) -> None:
         self._send("idle")
@@ -78,6 +84,9 @@ class RecordingIndicator:
     def set_processing(self) -> None:
         self._send("processing")
 
+    def set_language(self, language: str) -> None:
+        self._send(f"lang:{language}")
+
     def _send(self, command: str) -> None:
         if self._proc is None or self._proc.stdin is None:
             return
@@ -86,6 +95,18 @@ class RecordingIndicator:
             self._proc.stdin.flush()
         except Exception:
             return
+
+    def _read_events(self) -> None:
+        if self._proc is None or self._proc.stdout is None or self._on_event is None:
+            return
+        try:
+            for line in self._proc.stdout:
+                command = line.strip().lower()
+                if not command:
+                    continue
+                self._on_event(command)
+        except Exception as exc:
+            print(f"[VoiceType] Indicator event reader stopped: {exc}", file=sys.stderr)
 
     def _ensure_helper_binary(self) -> Path:
         repo_dir = Path(__file__).resolve().parent
@@ -186,6 +207,39 @@ class WhisperTranscriber:
         return text.strip()
 
 
+class ChineseTextConverter:
+    def __init__(self):
+        self._simplified = None
+        self._traditional = None
+
+    def convert(self, text: str, language_mode: str) -> str:
+        if language_mode == "zh-hans":
+            return self._get_simplified_converter().convert(text)
+        if language_mode == "zh-hant":
+            return self._get_traditional_converter().convert(text)
+        return text
+
+    def _get_simplified_converter(self):
+        if self._simplified is None:
+            self._simplified = self._build_converter("t2s")
+        return self._simplified
+
+    def _get_traditional_converter(self):
+        if self._traditional is None:
+            self._traditional = self._build_converter("s2t")
+        return self._traditional
+
+    def _build_converter(self, config: str):
+        try:
+            from opencc import OpenCC
+        except ImportError as exc:
+            raise RuntimeError(
+                "Chinese script conversion requires opencc. "
+                "Run `source .venv/bin/activate && python -m pip install -r requirements.txt`."
+            ) from exc
+        return OpenCC(config)
+
+
 class TextInjector:
     def __init__(self):
         self._controller = keyboard.Controller()
@@ -275,9 +329,11 @@ class TextInjector:
 class VoiceTypeAgent:
     def __init__(self, config: AgentConfig):
         self.config = config
-        self._indicator = RecordingIndicator()
+        self._indicator = RecordingIndicator(on_event=self._handle_indicator_event)
         self._recorder = AudioRecorder(config)
-        self._transcriber = WhisperTranscriber(config)
+        self._english_transcriber = WhisperTranscriber(self._build_english_config(config))
+        self._chinese_transcriber: Optional[WhisperTranscriber] = None
+        self._chinese_text_converter = ChineseTextConverter()
         self._injector = TextInjector()
         self._state_lock = threading.Lock()
         self._recording_active = False
@@ -288,12 +344,15 @@ class VoiceTypeAgent:
         self._target_app_for_session: Optional[str] = None
         self._target_click_for_session: Optional[Tuple[int, int]] = None
         self._target_ax_element_for_session: Optional[object] = None
+        self._active_language_mode = self._normalize_language_mode(config.language)
+        self._language_mode_for_session = self._active_language_mode
 
     def run(self) -> None:
         print(f"[VoiceType] Listening for hotkey: {self.config.hotkey}")
         print("[VoiceType] Press Ctrl+C in this terminal to exit.")
         self._indicator.start()
         self._indicator.set_idle()
+        self._indicator.set_language(self._active_language_mode)
         self._mouse_listener = mouse.Listener(on_click=self._on_click)
         self._mouse_listener.start()
 
@@ -302,6 +361,7 @@ class VoiceTypeAgent:
                 if not self._recording_active:
                     self._recording_active = True
                     self._stop_recording_event.clear()
+                    self._language_mode_for_session = self._active_language_mode
                     self._indicator.set_recording()
                     self._target_ax_element_for_session = self._capture_focused_element()
                     self._target_app_for_session = self._last_click_app or self._get_frontmost_app()
@@ -311,13 +371,29 @@ class VoiceTypeAgent:
                     print(
                         "[VoiceType] Recording started. Press hotkey again to stop."
                         f" Target app: {self._target_app_for_session or 'unknown'}"
+                        f" Language: {self._language_mode_for_session}"
                     )
                     return
                 self._stop_recording_event.set()
                 self._indicator.set_processing()
                 print("[VoiceType] Stop requested. Transcribing...")
 
-        listener = keyboard.GlobalHotKeys({self.config.hotkey: on_hotkey})
+        hotkey = keyboard.HotKey(keyboard.HotKey.parse(self.config.hotkey), on_hotkey)
+        listener: Optional[keyboard.Listener] = None
+
+        def on_press(key: object, injected: bool = False) -> None:
+            # macOS media keys can arrive without the injected flag in pynput's
+            # Darwin backend, so accept both callback shapes here.
+            if injected or listener is None:
+                return
+            hotkey.press(listener.canonical(key))
+
+        def on_release(key: object, injected: bool = False) -> None:
+            if injected or listener is None:
+                return
+            hotkey.release(listener.canonical(key))
+
+        listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         try:
             listener.start()
             listener.join()
@@ -331,8 +407,9 @@ class VoiceTypeAgent:
         wav_path: Optional[Path] = None
         try:
             wav_path = self._recorder.record_until_stop(self._stop_recording_event)
-            print("[VoiceType] Transcribing...")
-            text = self._transcriber.transcribe_wav(wav_path)
+            print(f"[VoiceType] Transcribing with language mode: {self._language_mode_for_session}")
+            text = self._get_transcriber_for_mode(self._language_mode_for_session).transcribe_wav(wav_path)
+            text = self._post_process_text(text, self._language_mode_for_session)
             if not text:
                 print("[VoiceType] No speech detected.")
                 return
@@ -356,6 +433,7 @@ class VoiceTypeAgent:
                 self._target_app_for_session = None
                 self._target_click_for_session = None
                 self._target_ax_element_for_session = None
+                self._language_mode_for_session = self._active_language_mode
                 self._indicator.set_idle()
 
     def _on_click(self, _x: int, _y: int, _button: mouse.Button, pressed: bool) -> None:
@@ -412,6 +490,45 @@ class VoiceTypeAgent:
         except Exception as exc:
             print(f"[VoiceType] AX capture error: {exc}", file=sys.stderr)
             return None
+
+    def _handle_indicator_event(self, event: str) -> None:
+        if not event.startswith("mode:"):
+            print(f"[VoiceType] Ignoring unknown indicator event: {event}", file=sys.stderr)
+            return
+        language_mode = self._normalize_language_mode(event.split(":", 1)[1])
+        with self._state_lock:
+            self._active_language_mode = language_mode
+            self._indicator.set_language(language_mode)
+        print(f"[VoiceType] Language mode switched to: {language_mode}")
+
+    def _get_transcriber_for_mode(self, language_mode: str) -> WhisperTranscriber:
+        if language_mode in {"zh-hans", "zh-hant"}:
+            if self._chinese_transcriber is None:
+                print("[VoiceType] Loading Chinese Whisper model: small")
+                self._chinese_transcriber = WhisperTranscriber(self._build_chinese_config(self.config))
+            return self._chinese_transcriber
+        return self._english_transcriber
+
+    def _post_process_text(self, text: str, language_mode: str) -> str:
+        if not text:
+            return text
+        if language_mode in {"zh-hans", "zh-hant"}:
+            return self._chinese_text_converter.convert(text, language_mode)
+        return text
+
+    def _build_english_config(self, config: AgentConfig) -> AgentConfig:
+        return replace(config, language="en")
+
+    def _build_chinese_config(self, config: AgentConfig) -> AgentConfig:
+        return replace(config, whisper_model="small", language="zh")
+
+    def _normalize_language_mode(self, language: str) -> str:
+        normalized = language.lower()
+        if normalized in {"zh", "zh-hans", "zh-cn", "zh-simplified"}:
+            return "zh-hans"
+        if normalized in {"zh-hant", "zh-tw", "zh-traditional"}:
+            return "zh-hant"
+        return "en"
 
 
 def parse_args() -> AgentConfig:

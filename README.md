@@ -9,6 +9,7 @@ It is intentionally built as a **single Python script** ([voicetype_agent.py](./
 - Local transcription pipeline (no cloud API required).
 - Focus-aware text injection using macOS Accessibility APIs.
 - Practical fallback strategies for apps/inputs that behave differently (for example, terminal inputs).
+- Bottom status pill with a language selector for English or Chinese.
 
 ## Technical Implementation
 - `pynput`
@@ -21,6 +22,8 @@ It is intentionally built as a **single Python script** ([voicetype_agent.py](./
 - `faster-whisper` (local Whisper model)
   - Transcribes recorded audio locally.
   - Supports selectable model size/device/compute mode.
+  - English mode uses the current English-only Whisper path.
+  - Chinese mode uses a multilingual Whisper model.
 - `pyobjc-framework-ApplicationServices`
   - Accesses macOS Accessibility (`AXUIElement`) APIs.
   - Captures the focused UI element at hotkey start.
@@ -58,6 +61,14 @@ python voicetype_agent.py
 
 Default hotkey: `<ctrl>+<shift>+r`
 
+Default language mode: `English`
+
+Use the small upward-pointing triangle on the right side of the indicator pill to switch between:
+
+- `English`
+- `Chinese Simplified`
+- `Chinese Traditional`
+
 ## Example Flags
 ```bash
 python voicetype_agent.py \
@@ -68,6 +79,33 @@ python voicetype_agent.py \
 ```
 
 `--max-record-seconds 0` means unlimited recording length. Any value greater than `0` restores a hard stop.
+
+## Chinese Mode
+
+Chinese modes use the multilingual Whisper `small` model.
+
+- English mode remains on the existing English path.
+- Chinese Simplified and Chinese Traditional use the same Mandarin transcription model and differ only in the final script conversion step.
+- The first time a Chinese mode is used, the model may download automatically if it is not already cached.
+- That first Chinese transcription can take longer while the model initializes.
+
+Chinese script conversion uses `opencc-python-reimplemented`, which is installed via `requirements.txt`.
+
+If you want to pre-download the Chinese-capable model manually:
+
+```bash
+cd /Users/honjar/Downloads/VoiceType
+source .venv/bin/activate
+python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='auto', compute_type='default')"
+```
+
+If you have not refreshed the virtualenv since this change, install the updated dependencies:
+
+```bash
+cd /Users/honjar/Downloads/VoiceType
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
 
 ## macOS Permissions (First Run)
 1. `System Settings -> Privacy & Security -> Microphone`: allow your terminal.
