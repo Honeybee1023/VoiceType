@@ -8,7 +8,7 @@ import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import pyaudio
 from ApplicationServices import (
@@ -29,7 +29,7 @@ class AgentConfig:
     sample_rate: int = 16000
     channels: int = 1
     chunk_size: int = 1024
-    max_record_s: float = 30.0
+    max_record_s: float = 0.0
     pre_type_delay_s: float = 0.2
     whisper_model: str = "base.en"
     whisper_device: str = "auto"
@@ -45,77 +45,13 @@ class RecordingIndicator:
         if self._proc is not None or sys.platform != "darwin":
             return
 
-        indicator_script = r"""
-import queue
-import sys
-import threading
-import tkinter as tk
-
-commands = queue.Queue()
-
-def reader():
-    for line in sys.stdin:
-        commands.put(line.strip().lower())
-    commands.put("exit")
-
-threading.Thread(target=reader, daemon=True).start()
-
-root = tk.Tk()
-root.title("VoiceType Indicator")
-root.overrideredirect(True)
-root.attributes("-topmost", True)
-root.configure(bg="#111111")
-root.attributes("-alpha", 0.9)
-
-label = tk.Label(
-    root,
-    text="○ IDLE",
-    fg="#CCCCCC",
-    bg="#111111",
-    font=("Menlo", 12, "bold"),
-    padx=12,
-    pady=8,
-)
-label.pack()
-
-root.update_idletasks()
-width = root.winfo_reqwidth()
-height = root.winfo_reqheight()
-screen_w = root.winfo_screenwidth()
-screen_h = root.winfo_screenheight()
-x = max(0, (screen_w - width) // 2)
-y = max(0, screen_h - height - 50)
-root.geometry(f"{width}x{height}+{x}+{y}")
-
-def set_state(state: str) -> None:
-    if state == "recording":
-        label.configure(text="● REC", fg="#FF4D4D")
-    elif state == "processing":
-        label.configure(text="◔ WORKING", fg="#FFD166")
-    else:
-        label.configure(text="○ IDLE", fg="#CFCFCF")
-
-def pump() -> None:
-    while True:
         try:
-            cmd = commands.get_nowait()
-        except queue.Empty:
-            break
-        if cmd == "exit":
-            root.destroy()
-            return
-        set_state(cmd)
-    root.after(100, pump)
-
-pump()
-root.mainloop()
-"""
-        try:
+            helper_binary = self._ensure_helper_binary()
             self._proc = subprocess.Popen(
-                [sys.executable, "-u", "-c", indicator_script],
+                [str(helper_binary)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 text=True,
             )
         except Exception as exc:
@@ -126,6 +62,8 @@ root.mainloop()
         self._send("exit")
         if self._proc is not None:
             try:
+                if self._proc.stdin is not None:
+                    self._proc.stdin.close()
                 self._proc.wait(timeout=1.0)
             except Exception:
                 self._proc.kill()
@@ -149,6 +87,33 @@ root.mainloop()
         except Exception:
             return
 
+    def _ensure_helper_binary(self) -> Path:
+        repo_dir = Path(__file__).resolve().parent
+        source_path = repo_dir / "indicator_helper.m"
+        binary_path = repo_dir / ".indicator_helper"
+
+        needs_build = not binary_path.exists()
+        if not needs_build and source_path.exists():
+            needs_build = source_path.stat().st_mtime > binary_path.stat().st_mtime
+
+        if needs_build:
+            subprocess.run(
+                [
+                    "clang",
+                    "-fobjc-arc",
+                    str(source_path),
+                    "-o",
+                    str(binary_path),
+                    "-framework",
+                    "Cocoa",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        return binary_path
+
 
 class AudioRecorder:
     def __init__(self, config: AgentConfig):
@@ -158,7 +123,7 @@ class AudioRecorder:
     def close(self) -> None:
         self._pa.terminate()
 
-    def record_until_stop(self, stop_event: threading.Event) -> bytes:
+    def record_until_stop(self, stop_event: threading.Event) -> Path:
         fmt = pyaudio.paInt16
         stream = self._pa.open(
             format=fmt,
@@ -167,20 +132,39 @@ class AudioRecorder:
             input=True,
             frames_per_buffer=self.config.chunk_size,
         )
-        frames: List[bytes] = []
-        max_chunks = int(self.config.max_record_s * self.config.sample_rate / self.config.chunk_size)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            wav_path = Path(tmp.name)
 
         try:
-            for _ in range(max_chunks):
-                if stop_event.is_set():
-                    break
-                data = stream.read(self.config.chunk_size, exception_on_overflow=False)
-                frames.append(data)
+            with wave.open(str(wav_path), "wb") as wf:
+                wf.setnchannels(self.config.channels)
+                wf.setsampwidth(self._pa.get_sample_size(fmt))
+                wf.setframerate(self.config.sample_rate)
+
+                chunks_recorded = 0
+                max_chunks = None
+                if self.config.max_record_s > 0:
+                    max_chunks = int(
+                        self.config.max_record_s * self.config.sample_rate / self.config.chunk_size
+                    )
+
+                while True:
+                    if stop_event.is_set():
+                        break
+                    if max_chunks is not None and chunks_recorded >= max_chunks:
+                        print(
+                            "[VoiceType] Max recording duration reached. Stopping capture.",
+                            file=sys.stderr,
+                        )
+                        break
+                    data = stream.read(self.config.chunk_size, exception_on_overflow=False)
+                    wf.writeframes(data)
+                    chunks_recorded += 1
         finally:
             stream.stop_stream()
             stream.close()
 
-        return b"".join(frames)
+        return wav_path
 
 class WhisperTranscriber:
     def __init__(self, config: AgentConfig):
@@ -191,26 +175,15 @@ class WhisperTranscriber:
             compute_type=config.whisper_compute_type,
         )
 
-    def transcribe_pcm16(self, pcm_bytes: bytes, sample_rate: int, channels: int) -> str:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            wav_path = Path(tmp.name)
-        try:
-            with wave.open(str(wav_path), "wb") as wf:
-                wf.setnchannels(channels)
-                wf.setsampwidth(2)
-                wf.setframerate(sample_rate)
-                wf.writeframes(pcm_bytes)
-
-            segments, _info = self._model.transcribe(
-                str(wav_path),
-                language=self.config.language,
-                vad_filter=True,
-                beam_size=1,
-            )
-            text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
-            return text.strip()
-        finally:
-            wav_path.unlink(missing_ok=True)
+    def transcribe_wav(self, wav_path: Path) -> str:
+        segments, _info = self._model.transcribe(
+            str(wav_path),
+            language=self.config.language,
+            vad_filter=True,
+            beam_size=1,
+        )
+        text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
+        return text.strip()
 
 
 class TextInjector:
@@ -355,14 +328,11 @@ class VoiceTypeAgent:
             self._recorder.close()
 
     def _handle_session(self) -> None:
+        wav_path: Optional[Path] = None
         try:
-            pcm = self._recorder.record_until_stop(self._stop_recording_event)
+            wav_path = self._recorder.record_until_stop(self._stop_recording_event)
             print("[VoiceType] Transcribing...")
-            text = self._transcriber.transcribe_pcm16(
-                pcm_bytes=pcm,
-                sample_rate=self.config.sample_rate,
-                channels=self.config.channels,
-            )
+            text = self._transcriber.transcribe_wav(wav_path)
             if not text:
                 print("[VoiceType] No speech detected.")
                 return
@@ -378,6 +348,8 @@ class VoiceTypeAgent:
         except Exception as exc:
             print(f"[VoiceType] Error: {exc}")
         finally:
+            if wav_path is not None:
+                wav_path.unlink(missing_ok=True)
             with self._state_lock:
                 self._recording_active = False
                 self._stop_recording_event.clear()
@@ -449,7 +421,7 @@ def parse_args() -> AgentConfig:
     parser.add_argument("--language", default="en")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--compute-type", default="default")
-    parser.add_argument("--max-record-seconds", type=float, default=30.0)
+    parser.add_argument("--max-record-seconds", type=float, default=0.0)
     parser.add_argument("--sample-rate", type=int, default=16000)
     parser.add_argument("--chunk-size", type=int, default=1024)
     args = parser.parse_args()

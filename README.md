@@ -17,7 +17,7 @@ It is intentionally built as a **single Python script** ([voicetype_agent.py](./
   - Provides keyboard/mouse fallback injection paths.
 - `PyAudio`
   - Captures microphone PCM frames in real time.
-  - Runs in a controlled recording loop with max-duration bounds.
+  - Runs until you stop it, with optional max-duration bounds if configured.
 - `faster-whisper` (local Whisper model)
   - Transcribes recorded audio locally.
   - Supports selectable model size/device/compute mode.
@@ -64,8 +64,10 @@ python voicetype_agent.py \
   --hotkey "<ctrl>+<shift>+r" \
   --model "base.en" \
   --language "en" \
-  --max-record-seconds 30
+  --max-record-seconds 0
 ```
+
+`--max-record-seconds 0` means unlimited recording length. Any value greater than `0` restores a hard stop.
 
 ## macOS Permissions (First Run)
 1. `System Settings -> Privacy & Security -> Microphone`: allow your terminal.
