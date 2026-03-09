@@ -245,6 +245,31 @@ class TextInjector:
         self._controller = keyboard.Controller()
         self._mouse = mouse.Controller()
 
+    def _normalize_app_name(self, target_app: Optional[str]) -> str:
+        return (target_app or "").strip().lower()
+
+    def _should_force_direct_typing(self, target_app: Optional[str]) -> bool:
+        app_name = self._normalize_app_name(target_app)
+        if not app_name:
+            return False
+        # Some macOS apps either ignore AX value updates or accept synthetic paste
+        # keystrokes without actually inserting text. Use raw typing for those.
+        direct_type_apps = ("terminal", "iterm", "wechat", "微信")
+        return any(name in app_name for name in direct_type_apps)
+
+    def _restore_click_focus(self, click_target: Optional[Tuple[int, int]]) -> None:
+        if click_target is None:
+            return
+        self._mouse.position = click_target
+        time.sleep(0.04)
+        self._mouse.click(mouse.Button.left, 1)
+        time.sleep(0.06)
+
+    def _type_text(self, text: str, click_target: Optional[Tuple[int, int]], reason: str) -> None:
+        self._restore_click_focus(click_target)
+        self._controller.type(text)
+        print(f"[VoiceType] Fallback inject used: {reason}", file=sys.stderr)
+
     def _inject_ax(self, text: str, focused_element: object) -> bool:
         selected_err = AXUIElementSetAttributeValue(
             focused_element,
@@ -280,16 +305,8 @@ class TextInjector:
         if not text:
             return
         if sys.platform == "darwin":
-            # Terminal-like command inputs often report AX "success" without visible insertion.
-            # Force direct typing for Terminal targets.
-            if target_app and "Terminal" in target_app:
-                if click_target is not None:
-                    self._mouse.position = click_target
-                    time.sleep(0.04)
-                    self._mouse.click(mouse.Button.left, 1)
-                    time.sleep(0.06)
-                self._controller.type(text)
-                print("[VoiceType] Fallback inject success: terminal direct typing", file=sys.stderr)
+            if self._should_force_direct_typing(target_app):
+                self._type_text(text, click_target, "app-specific direct typing")
                 return
 
         if focused_element is not None and self._inject_ax(text, focused_element):
@@ -297,11 +314,7 @@ class TextInjector:
         if sys.platform == "darwin":
             proc = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
             proc.communicate(text.encode("utf-8"))
-            if click_target is not None:
-                self._mouse.position = click_target
-                time.sleep(0.04)
-                self._mouse.click(mouse.Button.left, 1)
-                time.sleep(0.06)
+            self._restore_click_focus(click_target)
 
             # Use one paste method at a time to avoid duplicate insertion.
             apple_paste = subprocess.run(
