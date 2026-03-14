@@ -1,15 +1,15 @@
 # VoiceType
 
-VoiceType is a local, hotkey-driven voice-to-text agent for macOS.
+VoiceType is a local, hotkey-driven voice-to-text agent for macOS and Windows.
 
-It is intentionally built as a **single Python script** ([voicetype_agent.py](./voicetype_agent.py)) to keep the system understandable, debuggable, and easy to run.
+It is intentionally built around a single entrypoint script ([voicetype_agent.py](./voicetype_agent.py)) with a small platform adapter layer in `vt_platform/` to keep the system understandable, debuggable, and easy to run without mixing OS-specific logic.
 
 ## Highlights
 - Global hotkey workflow: press once to start recording, press again to stop and inject text.
 - Local transcription pipeline (no cloud API required).
-- Focus-aware text injection using macOS Accessibility APIs.
+- Focus-aware text injection using platform-specific APIs.
 - Practical fallback strategies for apps/inputs that behave differently (for example, terminal inputs).
-- Bottom status pill with a language selector for English or Chinese.
+- Bottom status pill with a language selector for English or Chinese (macOS).
 
 ## Technical Implementation
 - `pynput`
@@ -24,25 +24,32 @@ It is intentionally built as a **single Python script** ([voicetype_agent.py](./
   - Supports selectable model size/device/compute mode.
   - English mode uses the current English-only Whisper path.
   - Chinese mode uses a multilingual Whisper model.
-- `pyobjc-framework-ApplicationServices`
-  - Accesses macOS Accessibility (`AXUIElement`) APIs.
+- macOS platform adapter (`vt_platform/macos.py`)
+  - Uses `pyobjc-framework-ApplicationServices` for Accessibility (`AXUIElement`) APIs.
   - Captures the focused UI element at hotkey start.
   - Injects transcript via `kAXSelectedTextAttribute` with `kAXValueAttribute` fallback.
+- Windows platform adapter (`vt_platform/windows.py`)
+  - Uses Win32 APIs (via `ctypes`) for frontmost window title.
+  - Injects transcript via clipboard paste or direct typing.
 
-## Architecture (Single-Script)
-1. Hotkey pressed -> capture current focused AX element + start audio recording thread.
+## Architecture (Entrypoint + Platform Adapters)
+1. Hotkey pressed -> capture current focused element (if supported) + start audio recording thread.
 2. Hotkey pressed again -> stop recording.
 3. Transcribe buffered audio with local Whisper.
 4. Inject transcript into the stored focused element.
-5. If AX injection fails, fall back to clipboard/keyboard injection.
+5. If native injection fails or is unavailable, fall back to clipboard/keyboard injection.
+
+## Status
+- macOS: full feature set (indicator pill, AX injection, Quartz hotkey optional).
+- Windows: baseline support (hotkey, record/transcribe, clipboard paste or direct typing).
 
 ## Requirements
-- macOS
+- macOS or Windows
 - Python 3.10+
 - Microphone access
-- Accessibility access for the terminal/app running the script
+- macOS: Accessibility access for the terminal/app running the script
 
-## Setup
+## Setup (macOS)
 ```bash
 chmod +x setup.sh
 ./setup.sh
@@ -80,6 +87,18 @@ python voicetype_agent.py \
 
 `--max-record-seconds 0` means unlimited recording length. Any value greater than `0` restores a hard stop.
 
+## Windows Setup (Baseline)
+```bash
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -r requirements.txt
+python voicetype_agent.py
+```
+
+Notes:
+- Windows uses clipboard paste if `pyperclip` is available; otherwise it falls back to direct typing.
+- The UI indicator pill is macOS-only in the current version.
+
 ## Chinese Mode
 
 Chinese modes use the multilingual Whisper `small` model.
@@ -115,3 +134,4 @@ python -m pip install -r requirements.txt
 ## Notes
 - Transcription speed depends on chosen Whisper model size.
 - Some text inputs have app-specific behavior; fallback injection paths are included for robustness.
+- The Windows roadmap is tracked in `Windows_plan.md`.
