@@ -325,7 +325,8 @@ class VoiceTypeAgent:
 
 def parse_args() -> AgentConfig:
     parser = argparse.ArgumentParser(description="Local hotkey voice-to-text typer.")
-    parser.add_argument("--hotkey", default="<ctrl>+<shift>+r")
+    default_hotkey = "<alt>+<shift>+r" if sys.platform == "win32" else "<ctrl>+<shift>+r"
+    parser.add_argument("--hotkey", default=default_hotkey)
     parser.add_argument("--hotkey-backend", default="pynput", choices=["pynput", "quartz", "both"])
     parser.add_argument("--model", default="base.en")
     parser.add_argument("--language", default="en")

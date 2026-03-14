@@ -66,7 +66,9 @@ source .venv/bin/activate
 python voicetype_agent.py
 ```
 
-Default hotkey: `<ctrl>+<shift>+r`
+Default hotkey (macOS): `<ctrl>+<shift>+r`
+
+Default hotkey (Windows): `<alt>+<shift>+r`
 
 Default language mode: `English`
 
