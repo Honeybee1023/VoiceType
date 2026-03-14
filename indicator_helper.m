@@ -1,10 +1,118 @@
 #import <Cocoa/Cocoa.h>
 
+@interface IndicatorContentView : NSView
+@property(nonatomic, weak) NSWindow *targetWindow;
+@end
+
+@implementation IndicatorContentView
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+    (void)event;
+    return YES;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    NSView *hit = [self hitTest:[self convertPoint:event.locationInWindow fromView:nil]];
+    if ([hit isKindOfClass:[NSButton class]]) {
+        [super mouseDown:event];
+        return;
+    }
+    if (self.targetWindow != nil) {
+        [self.targetWindow performWindowDragWithEvent:event];
+        return;
+    }
+    [super mouseDown:event];
+}
+@end
+
+@interface DragHandleView : NSView
+@property(nonatomic, weak) NSWindow *targetWindow;
+@end
+
+@implementation DragHandleView
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+    (void)event;
+    return YES;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    if (self.targetWindow != nil) {
+        [self.targetWindow performWindowDragWithEvent:event];
+        return;
+    }
+    [super mouseDown:event];
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    [[NSColor colorWithWhite:0.7 alpha:0.8] setFill];
+    CGFloat dot = 2.2;
+    CGFloat gap = 3.6;
+    CGFloat startX = (NSWidth(self.bounds) - (3 * dot + 2 * gap)) / 2.0;
+    CGFloat startY = (NSHeight(self.bounds) - (2 * dot + gap)) / 2.0;
+    for (NSInteger row = 0; row < 2; row++) {
+        for (NSInteger col = 0; col < 3; col++) {
+            CGFloat x = startX + col * (dot + gap);
+            CGFloat y = startY + row * (dot + gap);
+            NSRect dotRect = NSMakeRect(x, y, dot, dot);
+            NSBezierPath *path = [NSBezierPath bezierPathWithOvalInRect:dotRect];
+            [path fill];
+        }
+    }
+}
+@end
+
+@interface NonInteractiveTextField : NSTextField
+@end
+
+@implementation NonInteractiveTextField
+- (NSView *)hitTest:(NSPoint)point {
+    (void)point;
+    return nil;
+}
+@end
+
+@interface DraggableButton : NSButton
+@property(nonatomic, weak) NSWindow *targetWindow;
+@property(nonatomic) NSPoint dragStart;
+@property(nonatomic) BOOL didDrag;
+@end
+
+@implementation DraggableButton
+- (void)mouseDown:(NSEvent *)event {
+    self.dragStart = event.locationInWindow;
+    self.didDrag = NO;
+    [super mouseDown:event];
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+    CGFloat dx = fabs(event.locationInWindow.x - self.dragStart.x);
+    CGFloat dy = fabs(event.locationInWindow.y - self.dragStart.y);
+    if (!self.didDrag && (dx > 3.0 || dy > 3.0)) {
+        self.didDrag = YES;
+    }
+    if (self.didDrag && self.targetWindow != nil) {
+        [self.targetWindow performWindowDragWithEvent:event];
+    } else {
+        [super mouseDragged:event];
+    }
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    if (self.didDrag) {
+        self.didDrag = NO;
+        return;
+    }
+    [super mouseUp:event];
+}
+@end
+
 @interface IndicatorAppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSPanel *window;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSTextField *languageLabel;
-@property(nonatomic, strong) NSButton *languageButton;
+@property(nonatomic, strong) DraggableButton *languageButton;
+@property(nonatomic, strong) DraggableButton *toggleButton;
+@property(nonatomic, strong) DragHandleView *dragHandle;
 @property(nonatomic, strong) NSMenu *languageMenu;
 @property(nonatomic, copy) NSString *currentState;
 @property(nonatomic, copy) NSString *currentLanguage;
@@ -44,14 +152,22 @@
     self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
     self.window.ignoresMouseEvents = NO;
     self.window.hidesOnDeactivate = NO;
+    self.window.movableByWindowBackground = YES;
 
-    NSView *contentView = self.window.contentView;
+    IndicatorContentView *contentView = [[IndicatorContentView alloc] initWithFrame:NSMakeRect(0.0, 0.0, width, height)];
+    contentView.targetWindow = self.window;
+    self.window.contentView = contentView;
 
-    CGFloat statusWidth = 102.0;
+    CGFloat handleWidth = 22.0;
+    CGFloat statusWidth = 96.0;
     CGFloat labelHeight = 18.0;
     CGFloat labelY = (height - labelHeight) / 2.0 - 1.0;
 
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10.0, labelY, statusWidth, labelHeight)];
+    self.dragHandle = [[DragHandleView alloc] initWithFrame:NSMakeRect(6.0, 4.0, handleWidth, height - 8.0)];
+    self.dragHandle.targetWindow = self.window;
+    [contentView addSubview:self.dragHandle];
+
+    self.statusLabel = [[NonInteractiveTextField alloc] initWithFrame:NSMakeRect(10.0 + handleWidth, labelY, statusWidth, labelHeight)];
     self.statusLabel.bezeled = NO;
     self.statusLabel.drawsBackground = NO;
     self.statusLabel.editable = NO;
@@ -61,7 +177,16 @@
     self.statusLabel.lineBreakMode = NSLineBreakByClipping;
     [contentView addSubview:self.statusLabel];
 
-    self.languageLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(106.0, labelY, 32.0, labelHeight)];
+    self.toggleButton = [[DraggableButton alloc] initWithFrame:NSMakeRect(10.0 + handleWidth, 4.0, 122.0 - handleWidth, 26.0)];
+    self.toggleButton.bordered = NO;
+    self.toggleButton.title = @"";
+    self.toggleButton.target = self;
+    self.toggleButton.action = @selector(toggleRecording:);
+    self.toggleButton.toolTip = @"Click to start/stop recording";
+    self.toggleButton.targetWindow = self.window;
+    [contentView addSubview:self.toggleButton];
+
+    self.languageLabel = [[NonInteractiveTextField alloc] initWithFrame:NSMakeRect(106.0, labelY, 32.0, labelHeight)];
     self.languageLabel.bezeled = NO;
     self.languageLabel.drawsBackground = NO;
     self.languageLabel.editable = NO;
@@ -71,13 +196,14 @@
     self.languageLabel.textColor = [NSColor colorWithWhite:0.78 alpha:1.0];
     [contentView addSubview:self.languageLabel];
 
-    self.languageButton = [[NSButton alloc] initWithFrame:NSMakeRect(142.0, 5.0, 20.0, 24.0)];
+    self.languageButton = [[DraggableButton alloc] initWithFrame:NSMakeRect(142.0, 5.0, 20.0, 24.0)];
     self.languageButton.bordered = NO;
     self.languageButton.title = @"▴";
     self.languageButton.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightBold];
     self.languageButton.contentTintColor = [NSColor colorWithWhite:0.88 alpha:1.0];
     self.languageButton.target = self;
     self.languageButton.action = @selector(showLanguageMenu:);
+    self.languageButton.targetWindow = self.window;
     [contentView addSubview:self.languageButton];
 
     self.languageMenu = [[NSMenu alloc] initWithTitle:@"Language"];
@@ -118,6 +244,12 @@
             [self shutdown];
         });
     });
+}
+
+- (void)toggleRecording:(id)sender {
+    (void)sender;
+    fprintf(stdout, "toggle\n");
+    fflush(stdout);
 }
 
 - (void)showLanguageMenu:(id)sender {

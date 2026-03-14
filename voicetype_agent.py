@@ -8,8 +8,7 @@ import time
 import wave
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Optional, Tuple
-
+from typing import Callable, Optional, Tuple, Dict
 import pyaudio
 from ApplicationServices import (
     AXUIElementCopyAttributeValue,
@@ -26,6 +25,7 @@ from pynput import keyboard, mouse
 @dataclass
 class AgentConfig:
     hotkey: str = "<ctrl>+<shift>+r"
+    hotkey_backend: str = "pynput"
     sample_rate: int = 16000
     channels: int = 1
     chunk_size: int = 1024
@@ -370,29 +370,11 @@ class VoiceTypeAgent:
         self._mouse_listener.start()
 
         def on_hotkey() -> None:
-            with self._state_lock:
-                if not self._recording_active:
-                    self._recording_active = True
-                    self._stop_recording_event.clear()
-                    self._language_mode_for_session = self._active_language_mode
-                    self._indicator.set_recording()
-                    self._target_ax_element_for_session = self._capture_focused_element()
-                    self._target_app_for_session = self._last_click_app or self._get_frontmost_app()
-                    self._target_click_for_session = self._last_click_pos
-                    worker = threading.Thread(target=self._handle_session, daemon=True)
-                    worker.start()
-                    print(
-                        "[VoiceType] Recording started. Press hotkey again to stop."
-                        f" Target app: {self._target_app_for_session or 'unknown'}"
-                        f" Language: {self._language_mode_for_session}"
-                    )
-                    return
-                self._stop_recording_event.set()
-                self._indicator.set_processing()
-                print("[VoiceType] Stop requested. Transcribing...")
+            self._toggle_recording(trigger="hotkey")
 
         hotkey = keyboard.HotKey(keyboard.HotKey.parse(self.config.hotkey), on_hotkey)
         listener: Optional[keyboard.Listener] = None
+        quartz_thread: Optional[threading.Thread] = None
 
         def on_press(key: object, injected: bool = False) -> None:
             # macOS media keys can arrive without the injected flag in pynput's
@@ -406,15 +388,46 @@ class VoiceTypeAgent:
                 return
             hotkey.release(listener.canonical(key))
 
-        listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         try:
-            listener.start()
-            listener.join()
+            if self.config.hotkey_backend in {"pynput", "both"}:
+                listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+                listener.start()
+            if self.config.hotkey_backend in {"quartz", "both"}:
+                quartz_thread = threading.Thread(target=self._run_quartz_hotkey_loop, daemon=True)
+                quartz_thread.start()
+            if listener is not None:
+                listener.join()
+            elif quartz_thread is not None:
+                while quartz_thread.is_alive():
+                    time.sleep(0.25)
         finally:
             if self._mouse_listener is not None:
                 self._mouse_listener.stop()
             self._indicator.stop()
             self._recorder.close()
+
+    def _toggle_recording(self, trigger: str) -> None:
+        with self._state_lock:
+            if not self._recording_active:
+                self._recording_active = True
+                self._stop_recording_event.clear()
+                self._language_mode_for_session = self._active_language_mode
+                self._indicator.set_recording()
+                self._target_ax_element_for_session = self._capture_focused_element()
+                self._target_app_for_session = self._last_click_app or self._get_frontmost_app()
+                self._target_click_for_session = self._last_click_pos
+                worker = threading.Thread(target=self._handle_session, daemon=True)
+                worker.start()
+                print(
+                    "[VoiceType] Recording started. Press hotkey again to stop."
+                    f" Trigger: {trigger}"
+                    f" Target app: {self._target_app_for_session or 'unknown'}"
+                    f" Language: {self._language_mode_for_session}"
+                )
+                return
+            self._stop_recording_event.set()
+            self._indicator.set_processing()
+            print(f"[VoiceType] Stop requested. Trigger: {trigger}. Transcribing...")
 
     def _handle_session(self) -> None:
         wav_path: Optional[Path] = None
@@ -505,6 +518,9 @@ class VoiceTypeAgent:
             return None
 
     def _handle_indicator_event(self, event: str) -> None:
+        if event == "toggle":
+            self._toggle_recording(trigger="indicator")
+            return
         if not event.startswith("mode:"):
             print(f"[VoiceType] Ignoring unknown indicator event: {event}", file=sys.stderr)
             return
@@ -513,6 +529,138 @@ class VoiceTypeAgent:
             self._active_language_mode = language_mode
             self._indicator.set_language(language_mode)
         print(f"[VoiceType] Language mode switched to: {language_mode}")
+
+    def _run_quartz_hotkey_loop(self) -> None:
+        if sys.platform != "darwin":
+            return
+        try:
+            import Quartz
+        except Exception as exc:
+            print(f"[VoiceType] Quartz hotkey unavailable: {exc}", file=sys.stderr)
+            return
+
+        parsed = self._parse_simple_hotkey(self.config.hotkey)
+        if parsed is None:
+            print(
+                "[VoiceType] Quartz hotkey expects format like <ctrl>+<shift>+r",
+                file=sys.stderr,
+            )
+            return
+        required_flags, keycode = parsed
+
+        def callback(_proxy, event_type, event, _refcon):
+            if event_type != Quartz.kCGEventKeyDown:
+                return event
+            flags = Quartz.CGEventGetFlags(event)
+            if (flags & required_flags) != required_flags:
+                return event
+            event_keycode = Quartz.CGEventGetIntegerValueField(
+                event, Quartz.kCGKeyboardEventKeycode
+            )
+            if event_keycode == keycode:
+                self._toggle_recording(trigger="quartz")
+            return event
+
+        mask = Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
+        tap = Quartz.CGEventTapCreate(
+            Quartz.kCGSessionEventTap,
+            Quartz.kCGHeadInsertEventTap,
+            Quartz.kCGEventTapOptionListenOnly,
+            mask,
+            callback,
+            None,
+        )
+        if tap is None:
+            print(
+                "[VoiceType] Quartz hotkey failed to attach (check Input Monitoring).",
+                file=sys.stderr,
+            )
+            return
+        run_loop_source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
+        Quartz.CFRunLoopAddSource(
+            Quartz.CFRunLoopGetCurrent(), run_loop_source, Quartz.kCFRunLoopCommonModes
+        )
+        Quartz.CGEventTapEnable(tap, True)
+        Quartz.CFRunLoopRun()
+
+    def _parse_simple_hotkey(self, hotkey: str) -> Optional[Tuple[int, int]]:
+        if sys.platform != "darwin":
+            return None
+        parts = [part.strip().lower() for part in hotkey.split("+") if part.strip()]
+        if not parts:
+            return None
+        key_part = None
+        required_flags = 0
+        for part in parts:
+            if part.startswith("<") and part.endswith(">"):
+                mod = part[1:-1]
+                if mod in {"ctrl", "control"}:
+                    required_flags |= 1 << 18  # kCGEventFlagMaskControl
+                elif mod in {"shift"}:
+                    required_flags |= 1 << 17  # kCGEventFlagMaskShift
+                elif mod in {"cmd", "command", "meta"}:
+                    required_flags |= 1 << 20  # kCGEventFlagMaskCommand
+                elif mod in {"alt", "option"}:
+                    required_flags |= 1 << 19  # kCGEventFlagMaskAlternate
+                else:
+                    return None
+            else:
+                key_part = part
+        if key_part is None or len(key_part) != 1:
+            return None
+        keycode_map: Dict[str, int] = {
+            "a": 0,
+            "s": 1,
+            "d": 2,
+            "f": 3,
+            "h": 4,
+            "g": 5,
+            "z": 6,
+            "x": 7,
+            "c": 8,
+            "v": 9,
+            "b": 11,
+            "q": 12,
+            "w": 13,
+            "e": 14,
+            "r": 15,
+            "y": 16,
+            "t": 17,
+            "1": 18,
+            "2": 19,
+            "3": 20,
+            "4": 21,
+            "6": 22,
+            "5": 23,
+            "=": 24,
+            "9": 25,
+            "7": 26,
+            "-": 27,
+            "8": 28,
+            "0": 29,
+            "]": 30,
+            "o": 31,
+            "u": 32,
+            "[": 33,
+            "i": 34,
+            "p": 35,
+            "l": 37,
+            "j": 38,
+            "'": 39,
+            "k": 40,
+            ";": 41,
+            "\\": 42,
+            ",": 43,
+            "/": 44,
+            "n": 45,
+            "m": 46,
+            ".": 47,
+            "`": 50,
+        }
+        keycode = keycode_map.get(key_part.lower())
+        if keycode is None:
+            return None
+        return required_flags, keycode
 
     def _get_transcriber_for_mode(self, language_mode: str) -> WhisperTranscriber:
         if language_mode in {"zh-hans", "zh-hant"}:
@@ -547,6 +695,7 @@ class VoiceTypeAgent:
 def parse_args() -> AgentConfig:
     parser = argparse.ArgumentParser(description="Local hotkey voice-to-text typer.")
     parser.add_argument("--hotkey", default="<ctrl>+<shift>+r")
+    parser.add_argument("--hotkey-backend", default="pynput", choices=["pynput", "quartz", "both"])
     parser.add_argument("--model", default="base.en")
     parser.add_argument("--language", default="en")
     parser.add_argument("--device", default="auto")
@@ -558,6 +707,7 @@ def parse_args() -> AgentConfig:
 
     return AgentConfig(
         hotkey=args.hotkey,
+        hotkey_backend=args.hotkey_backend,
         max_record_s=args.max_record_seconds,
         whisper_model=args.model,
         whisper_device=args.device,
