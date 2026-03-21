@@ -296,7 +296,7 @@ class VoiceTypeAgent:
     def _get_transcriber_for_mode(self, language_mode: str) -> WhisperTranscriber:
         if language_mode in {"zh-hans", "zh-hant"}:
             if self._chinese_transcriber is None:
-                print("[VoiceType] Loading Chinese Whisper model: small")
+                print("[VoiceType] Loading Chinese Whisper model: medium")
                 self._chinese_transcriber = WhisperTranscriber(self._build_chinese_config(self.config))
             return self._chinese_transcriber
         return self._english_transcriber
@@ -312,7 +312,7 @@ class VoiceTypeAgent:
         return replace(config, language="en")
 
     def _build_chinese_config(self, config: AgentConfig) -> AgentConfig:
-        return replace(config, whisper_model="small", language="zh")
+        return replace(config, whisper_model="medium", language="zh")
 
     def _normalize_language_mode(self, language: str) -> str:
         normalized = language.lower()

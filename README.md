@@ -103,7 +103,7 @@ Notes:
 
 ## Chinese Mode
 
-Chinese modes use the multilingual Whisper `small` model.
+Chinese modes use the multilingual Whisper `medium` model.
 
 - English mode remains on the existing English path.
 - Chinese Simplified and Chinese Traditional use the same Mandarin transcription model and differ only in the final script conversion step.
@@ -117,7 +117,7 @@ If you want to pre-download the Chinese-capable model manually:
 ```bash
 cd /Users/honjar/Downloads/VoiceType
 source .venv/bin/activate
-python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='auto', compute_type='default')"
+python -c "from faster_whisper import WhisperModel; WhisperModel('medium', device='auto', compute_type='default')"
 ```
 
 If you have not refreshed the virtualenv since this change, install the updated dependencies:
