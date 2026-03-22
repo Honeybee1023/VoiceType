@@ -18,6 +18,10 @@ class WindowsIndicator(BaseIndicator):
         self._queue: "Queue[Tuple[str, Optional[str]]]" = Queue()
         self._root = None
         self.requires_main_thread = True
+        self._debug = False
+
+    def set_debug(self, enabled: bool) -> None:
+        self._debug = bool(enabled)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -84,7 +88,10 @@ class WindowsIndicator(BaseIndicator):
 
         root = tk.Tk()
         self._root = root
-        root.overrideredirect(True)
+        if self._debug:
+            root.title("VoiceType Indicator (Debug)")
+        else:
+            root.overrideredirect(True)
         root.attributes("-topmost", True)
         root.configure(bg="#ecf0f1")
 
@@ -146,6 +153,18 @@ class WindowsIndicator(BaseIndicator):
         x = int((screen_w - width) / 2)
         y = int(screen_h - height - 60)
         root.geometry(f"{width}x{height}+{x}+{y}")
+        if self._debug:
+            print(
+                "[VoiceType] Indicator geometry:",
+                f"{width}x{height}+{x}+{y}",
+                file=sys.stderr,
+            )
+            try:
+                root.deiconify()
+                root.lift()
+                root.focus_force()
+            except Exception as exc:
+                print(f"[VoiceType] Indicator debug lift failed: {exc}", file=sys.stderr)
 
         def on_close() -> None:
             self._queue.put(("exit", None))
@@ -172,7 +191,10 @@ class WindowsIndicator(BaseIndicator):
             root.after(100, poll_queue)
 
         poll_queue()
-        root.mainloop()
+        try:
+            root.mainloop()
+        except Exception as exc:
+            print(f"[VoiceType] Indicator mainloop error: {exc}", file=sys.stderr)
 
     def run_forever(self) -> None:
         self._run()
