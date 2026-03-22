@@ -255,8 +255,12 @@ class WindowsTextInjector(BaseTextInjector):
             user32 = ctypes.windll.user32
             kernel32 = ctypes.windll.kernel32
             SW_RESTORE = 9
+            SW_SHOW = 5
 
-            user32.ShowWindow(hwnd, SW_RESTORE)
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, SW_RESTORE)
+            else:
+                user32.ShowWindow(hwnd, SW_SHOW)
             foreground = user32.GetForegroundWindow()
             if foreground == hwnd:
                 return True
@@ -474,8 +478,12 @@ class WindowsPlatform(BasePlatform):
                 user32 = ctypes.windll.user32
                 kernel32 = ctypes.windll.kernel32
                 SW_RESTORE = 9
+                SW_SHOW = 5
 
-                user32.ShowWindow(_app, SW_RESTORE)
+                if user32.IsIconic(_app):
+                    user32.ShowWindow(_app, SW_RESTORE)
+                else:
+                    user32.ShowWindow(_app, SW_SHOW)
                 foreground = user32.GetForegroundWindow()
                 if foreground == _app:
                     return None
