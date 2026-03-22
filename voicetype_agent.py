@@ -149,6 +149,8 @@ class VoiceTypeAgent:
         self._recording_active = False
         self._stop_recording_event = threading.Event()
         self._mouse_listener: Optional[mouse.Listener] = None
+        self._keyboard_listener: Optional[keyboard.Listener] = None
+        self._quartz_thread: Optional[threading.Thread] = None
         self._last_click_app: Optional[str] = None
         self._last_click_pos: Optional[Tuple[int, int]] = None
         self._target_app_for_session: Optional[str] = None
@@ -160,52 +162,68 @@ class VoiceTypeAgent:
     def run(self) -> None:
         print(f"[VoiceType] Listening for hotkey: {self.config.hotkey}")
         print("[VoiceType] Press Ctrl+C in this terminal to exit.")
-        self._indicator.start()
         self._indicator.set_idle()
         self._indicator.set_language(self._active_language_mode)
         self._mouse_listener = mouse.Listener(on_click=self._on_click)
         self._mouse_listener.start()
 
+        try:
+            self._start_hotkey_listeners()
+            if getattr(self._indicator, "requires_main_thread", False) and hasattr(
+                self._indicator, "run_forever"
+            ):
+                try:
+                    self._indicator.run_forever()
+                except KeyboardInterrupt:
+                    self._indicator.stop()
+            else:
+                self._indicator.start()
+                self._block_until_exit()
+        finally:
+            if self._mouse_listener is not None:
+                self._mouse_listener.stop()
+            if self._keyboard_listener is not None:
+                self._keyboard_listener.stop()
+            self._indicator.stop()
+            self._recorder.close()
+
+    def _start_hotkey_listeners(self) -> None:
         def on_hotkey() -> None:
             self._toggle_recording(trigger="hotkey")
 
         hotkey = keyboard.HotKey(keyboard.HotKey.parse(self.config.hotkey), on_hotkey)
-        listener: Optional[keyboard.Listener] = None
-        quartz_thread: Optional[threading.Thread] = None
 
         def on_press(key: object, injected: bool = False) -> None:
             # macOS media keys can arrive without the injected flag in pynput's
             # Darwin backend, so accept both callback shapes here.
-            if injected or listener is None:
+            if injected or self._keyboard_listener is None:
                 return
-            hotkey.press(listener.canonical(key))
+            hotkey.press(self._keyboard_listener.canonical(key))
 
         def on_release(key: object, injected: bool = False) -> None:
-            if injected or listener is None:
+            if injected or self._keyboard_listener is None:
                 return
-            hotkey.release(listener.canonical(key))
+            hotkey.release(self._keyboard_listener.canonical(key))
 
-        try:
-            if self.config.hotkey_backend in {"pynput", "both"}:
-                listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-                listener.start()
-            if self.config.hotkey_backend in {"quartz", "both"}:
-                quartz_thread = threading.Thread(
-                    target=self._platform.run_quartz_hotkey_loop,
-                    args=(self.config.hotkey, on_hotkey),
-                    daemon=True,
-                )
-                quartz_thread.start()
-            if listener is not None:
-                listener.join()
-            elif quartz_thread is not None:
-                while quartz_thread.is_alive():
-                    time.sleep(0.25)
-        finally:
-            if self._mouse_listener is not None:
-                self._mouse_listener.stop()
-            self._indicator.stop()
-            self._recorder.close()
+        if self.config.hotkey_backend in {"pynput", "both"}:
+            self._keyboard_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+            self._keyboard_listener.start()
+        if self.config.hotkey_backend in {"quartz", "both"}:
+            self._quartz_thread = threading.Thread(
+                target=self._platform.run_quartz_hotkey_loop,
+                args=(self.config.hotkey, on_hotkey),
+                daemon=True,
+            )
+            self._quartz_thread.start()
+
+    def _block_until_exit(self) -> None:
+        if self._keyboard_listener is not None:
+            self._keyboard_listener.join()
+            return
+        if self._quartz_thread is None:
+            return
+        while self._quartz_thread.is_alive():
+            time.sleep(0.25)
 
     def _toggle_recording(self, trigger: str) -> None:
         with self._state_lock:

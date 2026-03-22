@@ -41,7 +41,7 @@ It is intentionally built around a single entrypoint script ([voicetype_agent.py
 
 ## Status
 - macOS: full feature set (indicator pill, AX injection, Quartz hotkey optional).
-- Windows: baseline support (hotkey, record/transcribe, clipboard paste or direct typing).
+- Windows: baseline support (hotkey, record/transcribe, clipboard paste or direct typing) plus a lightweight indicator.
 
 ## Requirements
 - macOS or Windows
@@ -72,7 +72,7 @@ Default hotkey (Windows): `<alt>+<shift>+r`
 
 Default language mode: `English`
 
-Use the small upward-pointing triangle on the right side of the indicator pill to switch between:
+Use the indicator language menu to switch between:
 
 - `English`
 - `Chinese Simplified`
@@ -99,7 +99,7 @@ python voicetype_agent.py
 
 Notes:
 - Windows uses clipboard paste if `pyperclip` is available; otherwise it falls back to direct typing.
-- The UI indicator pill is macOS-only in the current version.
+- The Windows indicator uses Tkinter and runs in the main thread. Open the language menu with the `v` button or right-click.
 
 ## Chinese Mode
 

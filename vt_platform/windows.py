@@ -16,6 +16,8 @@ class WindowsIndicator(BaseIndicator):
         super().__init__(on_event=on_event)
         self._thread: Optional[threading.Thread] = None
         self._queue: "Queue[Tuple[str, Optional[str]]]" = Queue()
+        self._root = None
+        self.requires_main_thread = True
 
     def start(self) -> None:
         if self._thread is not None:
@@ -25,6 +27,11 @@ class WindowsIndicator(BaseIndicator):
 
     def stop(self) -> None:
         self._queue.put(("exit", None))
+        if self._root is not None:
+            try:
+                self._root.after(0, self._root.destroy)
+            except Exception:
+                pass
 
     def set_idle(self) -> None:
         self._queue.put(("state", "idle"))
@@ -49,17 +56,25 @@ class WindowsIndicator(BaseIndicator):
         language = "en"
 
         def build_label_text() -> str:
-            return f"VoiceType · {state} · {language}"
+            label_lang = {
+                "en": "EN",
+                "zh-hans": "ZH-S",
+                "zh-hant": "ZH-T",
+            }.get(language, language)
+            return f"VoiceType | {state} | {label_lang}"
 
         def apply_state(st: str) -> None:
             nonlocal state
             state = st
             if state == "recording":
                 label.configure(fg="#ffffff", bg="#c0392b")
+                menu_label.configure(fg="#ffffff", bg="#c0392b")
             elif state == "processing":
                 label.configure(fg="#ffffff", bg="#d35400")
+                menu_label.configure(fg="#ffffff", bg="#d35400")
             else:
                 label.configure(fg="#000000", bg="#ecf0f1")
+                menu_label.configure(fg="#000000", bg="#ecf0f1")
             label.configure(text=build_label_text())
 
         def apply_language(lang: str) -> None:
@@ -68,9 +83,13 @@ class WindowsIndicator(BaseIndicator):
             label.configure(text=build_label_text())
 
         root = tk.Tk()
+        self._root = root
         root.overrideredirect(True)
         root.attributes("-topmost", True)
         root.configure(bg="#ecf0f1")
+
+        container = tk.Frame(root, bg="#ecf0f1")
+        container.pack()
 
         label = tk.Label(
             root,
@@ -81,7 +100,18 @@ class WindowsIndicator(BaseIndicator):
             bg="#ecf0f1",
             fg="#000000",
         )
-        label.pack()
+        label.pack(in_=container, side="left")
+
+        menu_label = tk.Label(
+            root,
+            text="v",
+            font=("Segoe UI", 9, "bold"),
+            padx=6,
+            pady=6,
+            bg="#ecf0f1",
+            fg="#000000",
+        )
+        menu_label.pack(in_=container, side="left")
 
         def on_click(_event):
             if self._on_event is not None:
@@ -89,14 +119,42 @@ class WindowsIndicator(BaseIndicator):
 
         label.bind("<Button-1>", on_click)
 
+        def on_toggle_language(lang: str) -> None:
+            if self._on_event is not None:
+                self._on_event(f"mode:{lang}")
+            apply_language(lang)
+
+        menu = tk.Menu(root, tearoff=0)
+        menu.add_command(label="English", command=lambda: on_toggle_language("en"))
+        menu.add_command(label="Chinese Simplified", command=lambda: on_toggle_language("zh-hans"))
+        menu.add_command(label="Chinese Traditional", command=lambda: on_toggle_language("zh-hant"))
+
+        def open_menu(event) -> None:
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        menu_label.bind("<Button-1>", open_menu)
+        label.bind("<Button-3>", open_menu)
+
         root.update_idletasks()
-        width = label.winfo_width() or 200
-        height = label.winfo_height() or 30
+        width = container.winfo_width() or 220
+        height = container.winfo_height() or 30
         screen_w = root.winfo_screenwidth()
         screen_h = root.winfo_screenheight()
         x = int((screen_w - width) / 2)
         y = int(screen_h - height - 60)
         root.geometry(f"{width}x{height}+{x}+{y}")
+
+        def on_close() -> None:
+            self._queue.put(("exit", None))
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+        root.protocol("WM_DELETE_WINDOW", on_close)
 
         def poll_queue() -> None:
             try:
@@ -115,6 +173,9 @@ class WindowsIndicator(BaseIndicator):
 
         poll_queue()
         root.mainloop()
+
+    def run_forever(self) -> None:
+        self._run()
 
 
 class WindowsTextInjector(BaseTextInjector):
