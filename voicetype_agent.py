@@ -31,6 +31,9 @@ class AgentConfig:
     language: str = "en"
     debug_indicator: bool = False
     indicator_style: str = "auto"
+    windows_force_clipboard: bool = False
+    windows_allow_typing: bool = False
+    windows_restore_click: bool = False
 
 
 class AudioRecorder:
@@ -150,6 +153,15 @@ class VoiceTypeAgent:
         if hasattr(self._indicator, "set_style"):
             try:
                 self._indicator.set_style(self.config.indicator_style)
+            except Exception:
+                pass
+        if hasattr(self._platform, "set_text_injector_options"):
+            try:
+                self._platform.set_text_injector_options(
+                    force_clipboard=self.config.windows_force_clipboard,
+                    allow_typing=self.config.windows_allow_typing,
+                    restore_click=self.config.windows_restore_click,
+                )
             except Exception:
                 pass
         self._recorder = AudioRecorder(config)
@@ -305,6 +317,9 @@ class VoiceTypeAgent:
         return self._platform.get_frontmost_app()
 
     def _focus_target_app(self) -> None:
+        if self._platform.name == "windows" and self._target_ax_element_for_session is not None:
+            self._platform.focus_app(self._target_ax_element_for_session)
+            return
         self._platform.focus_app(self._target_app_for_session)
 
     def _capture_focused_element(self) -> Optional[object]:
@@ -372,6 +387,9 @@ def parse_args() -> AgentConfig:
         choices=["auto", "normal", "borderless"],
         help="Indicator window style (Windows only).",
     )
+    parser.add_argument("--windows-force-clipboard", action="store_true")
+    parser.add_argument("--windows-allow-typing", action="store_true")
+    parser.add_argument("--windows-restore-click", action="store_true")
     args = parser.parse_args()
 
     return AgentConfig(
@@ -386,6 +404,9 @@ def parse_args() -> AgentConfig:
         chunk_size=args.chunk_size,
         debug_indicator=args.debug_indicator,
         indicator_style=args.indicator_style,
+        windows_force_clipboard=args.windows_force_clipboard,
+        windows_allow_typing=args.windows_allow_typing,
+        windows_restore_click=args.windows_restore_click,
     )
 
 

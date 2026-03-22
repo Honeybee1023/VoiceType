@@ -98,7 +98,7 @@ python voicetype_agent.py
 ```
 
 Notes:
-- Windows uses clipboard paste if `pyperclip` is available; otherwise it falls back to direct typing.
+- Windows uses native Win32 `SendInput` for injection and falls back to clipboard paste if needed.
 - The Windows indicator uses Tkinter and runs in the main thread. Open the language menu with the `v` button or right-click.
 - If the indicator does not appear, try `--indicator-style normal` (default) or `--indicator-style borderless`.
 
