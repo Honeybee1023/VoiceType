@@ -30,6 +30,7 @@ class AgentConfig:
     whisper_compute_type: str = "default"
     language: str = "en"
     debug_indicator: bool = False
+    indicator_style: str = "auto"
 
 
 class AudioRecorder:
@@ -144,6 +145,11 @@ class VoiceTypeAgent:
         if hasattr(self._indicator, "set_debug"):
             try:
                 self._indicator.set_debug(self.config.debug_indicator)
+            except Exception:
+                pass
+        if hasattr(self._indicator, "set_style"):
+            try:
+                self._indicator.set_style(self.config.indicator_style)
             except Exception:
                 pass
         self._recorder = AudioRecorder(config)
@@ -360,6 +366,12 @@ def parse_args() -> AgentConfig:
     parser.add_argument("--sample-rate", type=int, default=16000)
     parser.add_argument("--chunk-size", type=int, default=1024)
     parser.add_argument("--debug-indicator", action="store_true")
+    parser.add_argument(
+        "--indicator-style",
+        default="auto",
+        choices=["auto", "normal", "borderless"],
+        help="Indicator window style (Windows only).",
+    )
     args = parser.parse_args()
 
     return AgentConfig(
@@ -373,6 +385,7 @@ def parse_args() -> AgentConfig:
         sample_rate=args.sample_rate,
         chunk_size=args.chunk_size,
         debug_indicator=args.debug_indicator,
+        indicator_style=args.indicator_style,
     )
 
 

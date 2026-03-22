@@ -19,9 +19,16 @@ class WindowsIndicator(BaseIndicator):
         self._root = None
         self.requires_main_thread = True
         self._debug = False
+        self._style = "auto"
 
     def set_debug(self, enabled: bool) -> None:
         self._debug = bool(enabled)
+
+    def set_style(self, style: str) -> None:
+        style = (style or "").lower()
+        if style not in {"auto", "normal", "borderless"}:
+            style = "auto"
+        self._style = style
 
     def start(self) -> None:
         if self._thread is not None:
@@ -90,7 +97,10 @@ class WindowsIndicator(BaseIndicator):
         self._root = root
         if self._debug:
             root.title("VoiceType Indicator (Debug)")
-        else:
+        borderless = self._style == "borderless"
+        if self._style == "auto":
+            borderless = False
+        if borderless:
             root.overrideredirect(True)
         root.attributes("-topmost", True)
         root.configure(bg="#ecf0f1")
