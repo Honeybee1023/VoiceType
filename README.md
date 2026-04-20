@@ -1,140 +1,115 @@
 # VoiceType
 
-VoiceType is a local, hotkey-driven voice-to-text agent for macOS and Windows.
+**Local, hotkey-driven voice-to-text that types wherever you click.** No cloud API. No subscription. Just press a hotkey, speak, and your words appear in any text field — browsers, terminals, coding tools, anything.
 
-It is intentionally built around a single entrypoint script ([voicetype_agent.py](./voicetype_agent.py)) with a small platform adapter layer in `vt_platform/` to keep the system understandable, debuggable, and easy to run without mixing OS-specific logic.
+<p align="center">
+  <img src="./Demo.gif" alt="VoiceType demo — voice to text in a browser and terminal" width="700">
+</p>
 
-## Highlights
-- Global hotkey workflow: press once to start recording, press again to stop and inject text.
-- Local transcription pipeline (no cloud API required).
-- Focus-aware text injection using platform-specific APIs.
-- Practical fallback strategies for apps/inputs that behave differently (for example, terminal inputs).
-- Bottom status pill with a language selector for English or Chinese (macOS).
+## Why VoiceType?
 
-## Technical Implementation
-- `pynput`
-  - Registers a global hotkey listener.
-  - Tracks mouse clicks for target app/context awareness.
-  - Provides keyboard/mouse fallback injection paths.
-- `PyAudio`
-  - Captures microphone PCM frames in real time.
-  - Runs until you stop it, with optional max-duration bounds if configured.
-- `faster-whisper` (local Whisper model)
-  - Transcribes recorded audio locally.
-  - Supports selectable model size/device/compute mode.
-  - English mode uses the current English-only Whisper path.
-  - Chinese mode uses a multilingual Whisper model.
-- macOS platform adapter (`vt_platform/macos.py`)
-  - Uses `pyobjc-framework-ApplicationServices` for Accessibility (`AXUIElement`) APIs.
-  - Captures the focused UI element at hotkey start.
-  - Injects transcript via `kAXSelectedTextAttribute` with `kAXValueAttribute` fallback.
-- Windows platform adapter (`vt_platform/windows.py`)
-  - Uses Win32 APIs (via `ctypes`) for frontmost window title.
-  - Injects transcript via clipboard paste or direct typing.
+Most voice-to-text tools give you a text box. VoiceType gives you a **hotkey** — press it anywhere, in any app, and your speech gets transcribed and injected right where your cursor is. It works in places that don't even have microphone support, like terminals and coding tools.
 
-## Architecture (Entrypoint + Platform Adapters)
-1. Hotkey pressed -> capture current focused element (if supported) + start audio recording thread.
-2. Hotkey pressed again -> stop recording.
-3. Transcribe buffered audio with local Whisper.
-4. Inject transcript into the stored focused element.
-5. If native injection fails or is unavailable, fall back to clipboard/keyboard injection.
+Everything runs locally on your machine using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). Your audio never leaves your computer.
 
-## Status
-- macOS: full feature set (indicator pill, AX injection, Quartz hotkey optional).
-- Windows: baseline support (hotkey, record/transcribe, clipboard paste or direct typing) plus a lightweight indicator.
+## Quick Start (macOS)
 
-## Requirements
-- macOS or Windows
-- Python 3.10+
-- Microphone access
-- macOS: Accessibility access for the terminal/app running the script
-
-## Setup (macOS)
 ```bash
-chmod +x setup.sh
-./setup.sh
-```
-
-If `PyAudio` build fails, install native deps first:
-```bash
-brew install portaudio ffmpeg
-```
-
-## Run
-```bash
+git clone https://github.com/Honeybee1023/VoiceType.git
+cd voicetype
+chmod +x setup.sh && ./setup.sh
 source .venv/bin/activate
-python voicetype_agent.py
+python3 voicetype_agent.py
 ```
 
-Default hotkey (macOS): `<ctrl>+<shift>+r`
+Default hotkey: **Ctrl+Shift+R** — press once to start recording, press again to stop and inject text.
 
-Default hotkey (Windows): `<alt>+<shift>+r`
+> **First run notes:** If `PyAudio` build fails, run `brew install portaudio ffmpeg` first, then re-run `./setup.sh`. macOS will also prompt you to grant Microphone, Accessibility, and Automation permissions to your terminal — accept all three.
 
-Default language mode: `English`
+## Quick Start (Windows)
 
-Use the indicator language menu to switch between:
-
-- `English`
-- `Chinese Simplified`
-- `Chinese Traditional`
-
-## Example Flags
 ```bash
-python voicetype_agent.py \
-  --hotkey "<ctrl>+<shift>+r" \
-  --model "base.en" \
-  --language "en" \
-  --max-record-seconds 0
-```
-
-`--max-record-seconds 0` means unlimited recording length. Any value greater than `0` restores a hard stop.
-
-## Windows Setup (Baseline)
-```bash
+git clone https://github.com/honeybee1023/voicetype.git
+cd voicetype
 python -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install -r requirements.txt
 python voicetype_agent.py
 ```
 
-Notes:
-- Windows uses native Win32 `SendInput` for injection and falls back to clipboard paste if needed.
-- The Windows indicator uses Tkinter and runs in the main thread. Open the language menu with the `v` button or right-click.
-- If the indicator does not appear, try `--indicator-style normal` (default) or `--indicator-style borderless`.
+Default hotkey: **Alt+Shift+R**
+
+## Features
+
+- **Global hotkey workflow** — press once to record, press again to transcribe and inject. Works system-wide.
+- **Focus-aware text injection** — uses macOS Accessibility APIs and Windows Win32 APIs to inject text directly into the focused element, with clipboard and keyboard fallbacks.
+- **Fully local transcription** — powered by faster-whisper (Whisper). No internet connection required after setup.
+- **Always-on status indicator** — a draggable pill shows recording state (idle/recording/working). Stays on top across all spaces.
+- **Long recording support** — record for minutes or hours. Useful for transcribing meetings, lectures, or conversations.
+- **Multi-language** — English, Chinese Simplified, and Chinese Traditional. Switch via the indicator menu.
+
+## How It Works
+
+1. Press the hotkey → VoiceType captures your currently focused UI element and starts recording.
+2. Press the hotkey again → recording stops.
+3. Audio is transcribed locally with Whisper.
+4. Transcript is injected into the stored focused element.
+5. If native injection fails, it falls back to clipboard paste or keyboard typing.
+
+## Configuration
+
+```bash
+python3 voicetype_agent.py \
+  --hotkey "<ctrl>+<shift>+r" \
+  --model "base.en" \
+  --language "en" \
+  --max-record-seconds 0   # 0 = unlimited recording
+```
+
+## Platform Support
+
+| | macOS | Windows |
+|---|---|---|
+| Hotkey | ✅ | ✅ |
+| Recording + Transcription | ✅ | ✅ |
+| Native text injection (Accessibility API) | ✅ | ✅ (Win32 SendInput) |
+| Clipboard fallback | ✅ | ✅ |
+| Status indicator | ✅ (native Cocoa pill) | ✅ (Tkinter) |
+| Language switching | ✅ | ✅ |
+
+## Requirements
+
+- macOS or Windows
+- Python 3.10+
+- Microphone access
+
+### macOS Permissions (First Run)
+
+1. **System Settings → Privacy & Security → Microphone**: allow your terminal.
+2. **System Settings → Privacy & Security → Accessibility**: allow your terminal.
+3. **System Settings → Privacy & Security → Automation**: allow terminal → System Events.
 
 ## Chinese Mode
 
-Chinese modes use the multilingual Whisper `medium` model.
+Chinese modes use the multilingual Whisper `medium` model. The first time you switch to Chinese, the model downloads automatically (~1.5 GB). English mode stays on the faster English-only model.
 
-- English mode remains on the existing English path.
-- Chinese Simplified and Chinese Traditional use the same Mandarin transcription model and differ only in the final script conversion step.
-- The first time a Chinese mode is used, the model may download automatically if it is not already cached.
-- That first Chinese transcription can take longer while the model initializes.
-
-Chinese script conversion uses `opencc-python-reimplemented`, which is installed via `requirements.txt`.
-
-If you want to pre-download the Chinese-capable model manually:
+To pre-download:
 
 ```bash
-cd /Users/honjar/Downloads/VoiceType
 source .venv/bin/activate
-python -c "from faster_whisper import WhisperModel; WhisperModel('medium', device='auto', compute_type='default')"
+python3 -c "from faster_whisper import WhisperModel; WhisperModel('medium', device='auto', compute_type='default')"
 ```
 
-If you have not refreshed the virtualenv since this change, install the updated dependencies:
+## Architecture
 
-```bash
-cd /Users/honjar/Downloads/VoiceType
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-```
+VoiceType is intentionally built around a single entrypoint script (`voicetype_agent.py`) with a small platform adapter layer in `vt_platform/` to keep things understandable, debuggable, and easy to run.
 
-## macOS Permissions (First Run)
-1. `System Settings -> Privacy & Security -> Microphone`: allow your terminal.
-2. `System Settings -> Privacy & Security -> Accessibility`: allow your terminal.
-3. `System Settings -> Privacy & Security -> Automation`: allow terminal -> System Events.
+- `pynput` — global hotkey listener, mouse click tracking, keyboard/mouse fallback injection
+- `PyAudio` — real-time microphone PCM capture
+- `faster-whisper` — local Whisper transcription with selectable model size/device/compute
+- `pyobjc` (macOS) — Accessibility APIs for focus-aware text injection
+- `ctypes`/Win32 (Windows) — SendInput for direct text injection
 
-## Notes
-- Transcription speed depends on chosen Whisper model size.
-- Some text inputs have app-specific behavior; fallback injection paths are included for robustness.
-- The Windows roadmap is tracked in `Windows_plan.md`.
+## License
+
+MIT
